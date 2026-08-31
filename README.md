@@ -7,23 +7,25 @@ This repository is dedicated to building and documenting a complete Corrective R
 ## Project Roadmap
 
 Our implementation progresses from a simple baseline to a fully corrective graph workflow:
-1. **Basic RAG**: Implement document loading, vector storage, retrieval, and generation using LangChain and LangGraph. (Completed in [1_basic_rag.ipynb](file:///c:/D_Drive/Python%20Projects/correctiverag/1_basic_rag.ipynb))
-2. **[Current] Retrieval Refinement**: Add document parsing, sentence decomposition, and sentence-level relevance grading/filtering using an LLM to select only the sentences that directly address the user query. (Completed in [2_retrieval_refinement.ipynb](file:///c:/D_Drive/Python%20Projects/correctiverag/2_retrieval_refinement.ipynb))
-3. **Corrective RAG (CRAG)**: Introduce dynamic fallback routing, query rewriting, and web search integration (e.g., Tavily Search) to handle ambiguous or out-of-domain queries.
+1. **Basic RAG**: Implement document loading, vector storage, retrieval, and generation using LangChain and LangGraph. (Completed in [1_basic_rag.ipynb](1_basic_rag.ipynb))
+2. **Retrieval Refinement**: Add document parsing, sentence decomposition, and sentence-level relevance grading/filtering using an LLM to select only the sentences that directly address the user query. (Completed in [2_retrieval_refinement.ipynb](2_retrieval_refinement.ipynb))
+3. **[Current] Retrieval Evaluation & Routing**: Introduce a retrieval evaluator node that scores retrieved chunks and determines a verdict (`CORRECT`, `INCORRECT`, or `AMBIGUOUS`) to dynamically route the query context downstream. (Completed in [3_retrieval_evaluator.ipynb](3_retrieval_evaluator.ipynb))
+4. **Corrective RAG (CRAG)**: Introduce dynamic fallback web search integration (e.g., Tavily Search) and query rewriting to handle cases where local documents are incorrect or insufficient.
 
 ---
 
 ## Repository Structure
 
-- [1_basic_rag.ipynb](file:///c:/D_Drive/Python%20Projects/correctiverag/1_basic_rag.ipynb): Jupyter Notebook containing the initial phase—a basic RAG pipeline orchestrated using LangGraph.
-- [2_retrieval_refinement.ipynb](file:///c:/D_Drive/Python%20Projects/correctiverag/2_retrieval_refinement.ipynb): Jupyter Notebook containing the second phase—Retrieval Refinement with sentence-level relevance grading.
+- [1_basic_rag.ipynb](1_basic_rag.ipynb): Jupyter Notebook containing the initial phase—a basic RAG pipeline orchestrated using LangGraph.
+- [2_retrieval_refinement.ipynb](2_retrieval_refinement.ipynb): Jupyter Notebook containing the second phase—Retrieval Refinement with sentence-level relevance grading.
+- [3_retrieval_evaluator.ipynb](3_retrieval_evaluator.ipynb): Jupyter Notebook containing the third phase—Retrieval Evaluation & Routing logic of Corrective RAG.
 - `.gitignore`: Configured to ignore virtual environments, cache files, environment variables, and local Jupyter checkpoints.
 
 ---
 
 ## Phase 1: Basic RAG Architecture
 
-The baseline implementation in [1_basic_rag.ipynb](file:///c:/D_Drive/Python%20Projects/correctiverag/1_basic_rag.ipynb) consists of the following components:
+The baseline implementation in [1_basic_rag.ipynb](1_basic_rag.ipynb) consists of the following components:
 
 ### 1. Ingestion & Embedding Pipeline
 - **Document Loading**: PyPDFLoader is used to read documents from a local `./documents/` directory.
@@ -58,7 +60,7 @@ graph TD
 
 ## Phase 2: Retrieval Refinement Architecture
 
-The implementation in [2_retrieval_refinement.ipynb](file:///c:/D_Drive/Python%20Projects/correctiverag/2_retrieval_refinement.ipynb) focuses on minimizing noise in the context passed to the LLM. Instead of sending the full content of retrieved documents to the LLM, the context is broken down into individual sentences (strips), graded for relevance, and only the relevant sentences are used.
+The implementation in [2_retrieval_refinement.ipynb](2_retrieval_refinement.ipynb) focuses on minimizing noise in the context passed to the LLM. Instead of sending the full content of retrieved documents to the LLM, the context is broken down into individual sentences (strips), graded for relevance, and only the relevant sentences are used.
 
 ### 1. Ingestion Pipeline Updates
 - **Source Books**: Loads `./documents/book1.pdf`, `./documents/book2.pdf`, and `./documents/book3.pdf`.
@@ -96,6 +98,56 @@ graph TD
 
 ---
 
+## Phase 3: Retrieval Evaluation & Routing Architecture
+
+The implementation in [3_retrieval_evaluator.ipynb](3_retrieval_evaluator.ipynb) adds a scoring and decision-making step to classify the retrieved documents and route the query accordingly.
+
+### 1. Relevance Scoring
+- **LLM Evaluator**: Chunks are individually graded by `gpt-4o-mini` using structured output (`DocEvalStore` containing `score` and `reason`).
+- **Verdict Rules**:
+  - **CORRECT**: If at least one retrieved chunk scores above the upper threshold (`upper_t = 0.7`).
+  - **INCORRECT**: If all retrieved chunks score below the lower threshold (`lower_t = 0.3`).
+  - **AMBIGUOUS**: Mixed relevance signals (no chunk > `upper_t`, but not all < `lower_t`).
+
+### 2. LangGraph Execution Workflow with Routing
+
+```mermaid
+graph TD
+    START((START)) --> Retrieve[retrieve]
+    Retrieve --> Eval[eval_each_doc]
+    Eval -->|Verdict CORRECT| Refine[refine]
+    Eval -->|Verdict INCORRECT| Fail[fail / web_search fallback]
+    Eval -->|Verdict AMBIGUOUS| Ambiguous[ambiguous handler]
+    Refine --> Generate[generate]
+    Generate --> END((END))
+    Fail --> END
+    Ambiguous --> END
+```
+
+- **Extended State Representation**:
+  ```python
+  class State(TypedDict):
+      question: str
+      docs: List[Document]
+      good_docs: List[Document]    # Documents meeting evaluation threshold
+      verdict: str                 # CORRECT, INCORRECT, or AMBIGUOUS
+      reason: str                  # Explanation for verdict
+      strips: List[str]            # Decomposed sentence strips
+      kept_strips: List[str]       # Sentences matching relevance criteria
+      refined_context: str         # Recomposed internal knowledge context
+      answer: str
+  ```
+
+- **Nodes**:
+  - `retrieve`: Retrieves relevant documents from FAISS index.
+  - `eval_each_doc`: Evaluates all retrieved documents using structured criteria.
+  - `refine`: Sentence decomposition and filtering of good documents.
+  - `generate`: Generates tutor response using `refined_context`.
+  - `fail`: Fallback node that logs/outputs a failure message (intended for web search integration).
+  - `ambiguous`: Handles mixed signals and outputs a clarifying message.
+
+---
+
 ## Getting Started
 
 ### Prerequisites
@@ -128,14 +180,14 @@ Make sure you have Python (version 3.9+) installed, along with Jupyter Notebook 
    - For Retrieval Refinement: `documents/book1.pdf`, `documents/book2.pdf`, `documents/book3.pdf`
 
 5. **Run the Notebooks**:
-   - Run [1_basic_rag.ipynb](file:///c:/D_Drive/Python%20Projects/correctiverag/1_basic_rag.ipynb) to test the baseline.
-   - Run [2_retrieval_refinement.ipynb](file:///c:/D_Drive/Python%20Projects/correctiverag/2_retrieval_refinement.ipynb) to test retrieval refinement with relevance filtering.
+   - Run [1_basic_rag.ipynb](1_basic_rag.ipynb) to test the baseline.
+   - Run [2_retrieval_refinement.ipynb](2_retrieval_refinement.ipynb) to test retrieval refinement with relevance filtering.
+   - Run [3_retrieval_evaluator.ipynb](3_retrieval_evaluator.ipynb) to test retrieval evaluation and routing.
 
 ---
 
 ## Next Steps: Corrective RAG (CRAG)
 
 The next step is to evolve this pipeline into a fully Corrective RAG system by adding:
-1. **Dynamic Fallback Routing**: A conditional edge that evaluates if any local documents were kept.
-2. **Query Rewrite**: If local knowledge is insufficient, rewrite the query to optimize it for external search engines.
-3. **Web Search Integration**: Query a web search tool (such as Tavily Search) to retrieve supplementary information when the local database does not yield enough relevant data.
+1. **Query Rewrite**: If local knowledge is graded INCORRECT, rewrite the user query to optimize it for search engines.
+2. **Web Search Integration**: Connect the `fail` / `web_search` node to a live web search tool (such as Tavily Search) to pull external context when local database lookup yields insufficient or incorrect information.
