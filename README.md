@@ -11,7 +11,8 @@ Our implementation progresses from a simple baseline to a fully corrective graph
 2. **Retrieval Refinement**: Add document parsing, sentence decomposition, and sentence-level relevance grading/filtering using an LLM to select only the sentences that directly address the user query. (Completed in [2_retrieval_refinement.ipynb](2_retrieval_refinement.ipynb))
 3. **Retrieval Evaluation & Routing**: Introduce a retrieval evaluator node that scores retrieved chunks and determines a verdict (`CORRECT`, `INCORRECT`, or `AMBIGUOUS`) to dynamically route the query context downstream. (Completed in [3_retrieval_evaluator.ipynb](3_retrieval_evaluator.ipynb))
 4. **Web Search Integration & Refinement (CRAG)**: Integrate live Tavily Web Search as a fallback when local database retrieval is `INCORRECT`, running sentence-level context refinement over web search results. (Completed in [4_web_search_refinement.ipynb](4_web_search_refinement.ipynb))
-5. **[Current] Query Rewriting**: Introduce a query rewriter node before executing web search when the evaluation verdict is `INCORRECT`. The LLM rewrites raw user questions into optimized web search queries (keywords, time constraints, etc.) for improved web document retrieval. (Completed in [5_query_rewrite.ipynb](5_query_rewrite.ipynb))
+5. **Query Rewriting**: Introduce a query rewriter node before executing web search when the evaluation verdict is `INCORRECT`. The LLM rewrites raw user questions into optimized web search queries (keywords, time constraints, etc.) for improved web document retrieval. (Completed in [5_query_rewrite.ipynb](5_query_rewrite.ipynb))
+6. **[Current] Ambiguous Verdict & Dual-Source Refinement**: Handle `AMBIGUOUS` verdicts by rewriting the query, searching the web, combining both internal (`good_docs`) and external (`web_docs`) documents for sentence-level context refinement, and generating the final response. (Completed in [6_ambiguous.ipynb](6_ambiguous.ipynb))
 
 ---
 
@@ -22,6 +23,7 @@ Our implementation progresses from a simple baseline to a fully corrective graph
 - [3_retrieval_evaluator.ipynb](3_retrieval_evaluator.ipynb): Jupyter Notebook containing the third phase—Retrieval Evaluation & Routing logic of Corrective RAG.
 - [4_web_search_refinement.ipynb](4_web_search_refinement.ipynb): Jupyter Notebook containing the fourth phase—Web Search Integration using Tavily Search with sentence-level context refinement.
 - [5_query_rewrite.ipynb](5_query_rewrite.ipynb): Jupyter Notebook containing the fifth phase—Query Rewriting before web search integration.
+- [6_ambiguous.ipynb](6_ambiguous.ipynb): Jupyter Notebook containing the sixth phase—handling `AMBIGUOUS` verdicts using dual-source context refinement (internal + web search).
 - `.gitignore`: Configured to ignore virtual environments, cache files, environment variables, and local Jupyter checkpoints.
 
 ---
@@ -259,6 +261,62 @@ graph TD
 
 ---
 
+## Phase 6: Ambiguous Verdict & Dual-Source Refinement Architecture
+
+The implementation in [6_ambiguous.ipynb](6_ambiguous.ipynb) addresses the `AMBIGUOUS` verdict scenario. When local retrieval yields mixed relevance signals (no document chunk > `UPPER_TH` of 0.7, but not all chunks < `LOWER_TH` of 0.3), the system combines both internal weakly relevant documents (`good_docs`) and external web search results (`web_docs`) into a single context pool for sentence-level refinement and response generation.
+
+### 1. Key Highlights & Routing Logic
+- **Dual-Source Knowledge Pooling in `refine`**:
+  - `CORRECT` verdict: Uses internal documents (`good_docs`) only.
+  - `INCORRECT` verdict: Uses web search documents (`web_docs`) only.
+  - `AMBIGUOUS` verdict: Combines both sources (`good_docs + web_docs`).
+- **Graph Flow**:
+  - `CORRECT` verdict routes directly to `refine`.
+  - `INCORRECT` and `AMBIGUOUS` verdicts route to `rewrite_query` $\rightarrow$ `web_search` $\rightarrow$ `refine` $\rightarrow$ `generate`.
+
+### 2. LangGraph Execution Workflow
+
+```mermaid
+graph TD
+    START((START)) --> Retrieve[retrieve]
+    Retrieve --> Eval[eval_each_doc]
+    Eval -->|Verdict CORRECT| Refine[refine]
+    Eval -->|Verdict INCORRECT or AMBIGUOUS| Rewrite[rewrite_query]
+    Rewrite --> WebSearch[web_search]
+    WebSearch --> Refine
+    Refine --> Generate[generate]
+    Generate --> END((END))
+```
+
+- **Extended State Representation**:
+  ```python
+  class State(TypedDict):
+      question: str
+      docs: List[Document]
+      good_docs: List[Document]    # Documents scoring > LOWER_TH (0.3)
+      verdict: str                 # CORRECT, INCORRECT, or AMBIGUOUS
+      reason: str
+      strips: List[str]            # Decomposed sentence strips
+      kept_strips: List[str]       # Sentences passing relevance filter
+      refined_context: str         # Recomposed refined context
+      web_query: str               # Search-optimized web query
+      web_docs: List[Document]     # Web search document results
+      answer: str
+  ```
+
+- **Nodes**:
+  - `retrieve`: Retrieves `k=4` chunks from local FAISS vector store.
+  - `eval_each_doc`: Evaluates chunks using `doc_eval_chain` (`DocEvalScore`) and assigns `verdict`:
+    - `CORRECT`: at least one chunk > `0.7`
+    - `INCORRECT`: all chunks < `0.3`
+    - `AMBIGUOUS`: otherwise
+  - `rewrite_query`: Rewrites user question into optimized search query.
+  - `web_search`: Fetches web search documents using Tavily.
+  - `refine`: Pools documents based on verdict (`good_docs`, `web_docs`, or `good_docs + web_docs`), splits into sentence strips, filters using `filter_chain` (`KeepOrDrop`), and recomposes `refined_context`.
+  - `generate`: Synthesizes response from `refined_context`.
+
+---
+
 ## Getting Started
 
 ### Prerequisites
@@ -297,7 +355,9 @@ Make sure you have Python (version 3.9+) installed, along with Jupyter Notebook 
    - Run [3_retrieval_evaluator.ipynb](3_retrieval_evaluator.ipynb) to test retrieval evaluation and routing.
    - Run [4_web_search_refinement.ipynb](4_web_search_refinement.ipynb) to test web search fallback integration and sentence refinement over web documents.
    - Run [5_query_rewrite.ipynb](5_query_rewrite.ipynb) to test query rewriting prior to web search.
+   - Run [6_ambiguous.ipynb](6_ambiguous.ipynb) to test handling of ambiguous retrieval verdicts with dual-source (internal + web) context refinement.
 
 ---
+
 
 
