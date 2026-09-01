@@ -9,8 +9,8 @@ This repository is dedicated to building and documenting a complete Corrective R
 Our implementation progresses from a simple baseline to a fully corrective graph workflow:
 1. **Basic RAG**: Implement document loading, vector storage, retrieval, and generation using LangChain and LangGraph. (Completed in [1_basic_rag.ipynb](1_basic_rag.ipynb))
 2. **Retrieval Refinement**: Add document parsing, sentence decomposition, and sentence-level relevance grading/filtering using an LLM to select only the sentences that directly address the user query. (Completed in [2_retrieval_refinement.ipynb](2_retrieval_refinement.ipynb))
-3. **[Current] Retrieval Evaluation & Routing**: Introduce a retrieval evaluator node that scores retrieved chunks and determines a verdict (`CORRECT`, `INCORRECT`, or `AMBIGUOUS`) to dynamically route the query context downstream. (Completed in [3_retrieval_evaluator.ipynb](3_retrieval_evaluator.ipynb))
-4. **Corrective RAG (CRAG)**: Introduce dynamic fallback web search integration (e.g., Tavily Search) and query rewriting to handle cases where local documents are incorrect or insufficient.
+3. **Retrieval Evaluation & Routing**: Introduce a retrieval evaluator node that scores retrieved chunks and determines a verdict (`CORRECT`, `INCORRECT`, or `AMBIGUOUS`) to dynamically route the query context downstream. (Completed in [3_retrieval_evaluator.ipynb](3_retrieval_evaluator.ipynb))
+4. **[Current] Web Search Integration & Refinement (CRAG)**: Integrate live Tavily Web Search as a fallback when local database retrieval is `INCORRECT`, running sentence-level context refinement over web search results. (Completed in [4_web_search_refinement.ipynb](4_web_search_refinement.ipynb))
 
 ---
 
@@ -19,6 +19,7 @@ Our implementation progresses from a simple baseline to a fully corrective graph
 - [1_basic_rag.ipynb](1_basic_rag.ipynb): Jupyter Notebook containing the initial phase—a basic RAG pipeline orchestrated using LangGraph.
 - [2_retrieval_refinement.ipynb](2_retrieval_refinement.ipynb): Jupyter Notebook containing the second phase—Retrieval Refinement with sentence-level relevance grading.
 - [3_retrieval_evaluator.ipynb](3_retrieval_evaluator.ipynb): Jupyter Notebook containing the third phase—Retrieval Evaluation & Routing logic of Corrective RAG.
+- [4_web_search_refinement.ipynb](4_web_search_refinement.ipynb): Jupyter Notebook containing the fourth phase—Web Search Integration using Tavily Search with sentence-level context refinement.
 - `.gitignore`: Configured to ignore virtual environments, cache files, environment variables, and local Jupyter checkpoints.
 
 ---
@@ -148,6 +149,58 @@ graph TD
 
 ---
 
+## Phase 4: Web Search Refinement Architecture
+
+The implementation in [4_web_search_refinement.ipynb](4_web_search_refinement.ipynb) completes the core Corrective RAG loop by integrating live Tavily Web Search when local document retrieval yields an `INCORRECT` verdict. Web search results are processed through sentence-level decomposition and filtering before response generation.
+
+### 1. Key Highlights & Updates
+- **Embeddings**: Upgraded to `text-embedding-3-large` for FAISS vector storage.
+- **Tavily Integration**: Utilizes `TavilySearchResults(max_results=5)` to fetch real-time web context when local books lack relevant information.
+- **Dynamic Context Routing**:
+  - `CORRECT` verdict: Routes `good_docs` to `refine`.
+  - `INCORRECT` verdict: Triggers `web_search_node`, converts web search results into `Document` objects stored in `web_docs`, then passes them to `refine`.
+  - `AMBIGUOUS` verdict: Directly routes to `ambiguous_node`.
+
+### 2. LangGraph Execution Workflow
+
+```mermaid
+graph TD
+    START((START)) --> Retrieve[retrieve]
+    Retrieve --> Eval[eval_each_doc]
+    Eval -->|Verdict CORRECT| Refine[refine]
+    Eval -->|Verdict INCORRECT| WebSearch[web_search]
+    Eval -->|Verdict AMBIGUOUS| Ambiguous[ambiguous]
+    WebSearch --> Refine
+    Refine --> Generate[generate]
+    Generate --> END((END))
+    Ambiguous --> END((END))
+```
+
+- **Extended State Representation**:
+  ```python
+  class State(TypedDict):
+      question: str
+      docs: List[Document]
+      good_docs: List[Document]
+      verdict: str
+      reason: str
+      strips: List[str]
+      kept_strips: List[str]
+      refined_context: str
+      web_docs: List[Document]     # Web search document results
+      answer: str
+  ```
+
+- **Nodes**:
+  - `retrieve`: Retrieves relevant documents from local FAISS vector store.
+  - `eval_each_doc`: Evaluates document chunks using structured LLM output and assigns `verdict` (`CORRECT`, `INCORRECT`, or `AMBIGUOUS`).
+  - `web_search`: Invokes Tavily Web Search with the user query, creating `web_docs` containing `TITLE`, `URL`, and `CONTENT`.
+  - `refine`: Extracts sentence strips from either `good_docs` (if `CORRECT`) or `web_docs` (if `INCORRECT`), running LLM filter `filter_chain` (`KeepOrDrop`) to produce `refined_context`.
+  - `generate`: Generates an answer using `gpt-4o-mini` strictly based on `refined_context`.
+  - `ambiguous`: Returns a warning message explaining why the query could not be definitively answered.
+
+---
+
 ## Getting Started
 
 ### Prerequisites
@@ -165,29 +218,26 @@ Make sure you have Python (version 3.9+) installed, along with Jupyter Notebook 
    ```bash
    python -m venv .venv
    .venv\Scripts\activate
-   pip install langchain langchain-openai langchain-community langgraph faiss-cpu pypdf python-dotenv pydantic
+   pip install langchain langchain-openai langchain-community langgraph faiss-cpu pypdf python-dotenv pydantic tavily-python
    ```
 
 3. **Configure Environment Variables**:
    Create a `.env` file in the root directory:
    ```env
    OPENAI_API_KEY=your_openai_api_key_here
+   TAVILY_API_KEY=your_tavily_api_key_here
    ```
 
 4. **Prepare PDF Documents**:
    Create a folder named `documents` and place the target PDFs there:
    - For Basic RAG: `documents/introtoml.pdf`, `documents/samplebook.pdf`, `documents/docs32.pdf`
-   - For Retrieval Refinement: `documents/book1.pdf`, `documents/book2.pdf`, `documents/book3.pdf`
+   - For Retrieval Refinement & downstream CRAG phases: `documents/book1.pdf`, `documents/book2.pdf`, `documents/book3.pdf`
 
 5. **Run the Notebooks**:
    - Run [1_basic_rag.ipynb](1_basic_rag.ipynb) to test the baseline.
    - Run [2_retrieval_refinement.ipynb](2_retrieval_refinement.ipynb) to test retrieval refinement with relevance filtering.
    - Run [3_retrieval_evaluator.ipynb](3_retrieval_evaluator.ipynb) to test retrieval evaluation and routing.
+   - Run [4_web_search_refinement.ipynb](4_web_search_refinement.ipynb) to test web search fallback integration and sentence refinement over web documents.
 
 ---
 
-## Next Steps: Corrective RAG (CRAG)
-
-The next step is to evolve this pipeline into a fully Corrective RAG system by adding:
-1. **Query Rewrite**: If local knowledge is graded INCORRECT, rewrite the user query to optimize it for search engines.
-2. **Web Search Integration**: Connect the `fail` / `web_search` node to a live web search tool (such as Tavily Search) to pull external context when local database lookup yields insufficient or incorrect information.
