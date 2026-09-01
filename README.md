@@ -10,7 +10,8 @@ Our implementation progresses from a simple baseline to a fully corrective graph
 1. **Basic RAG**: Implement document loading, vector storage, retrieval, and generation using LangChain and LangGraph. (Completed in [1_basic_rag.ipynb](1_basic_rag.ipynb))
 2. **Retrieval Refinement**: Add document parsing, sentence decomposition, and sentence-level relevance grading/filtering using an LLM to select only the sentences that directly address the user query. (Completed in [2_retrieval_refinement.ipynb](2_retrieval_refinement.ipynb))
 3. **Retrieval Evaluation & Routing**: Introduce a retrieval evaluator node that scores retrieved chunks and determines a verdict (`CORRECT`, `INCORRECT`, or `AMBIGUOUS`) to dynamically route the query context downstream. (Completed in [3_retrieval_evaluator.ipynb](3_retrieval_evaluator.ipynb))
-4. **[Current] Web Search Integration & Refinement (CRAG)**: Integrate live Tavily Web Search as a fallback when local database retrieval is `INCORRECT`, running sentence-level context refinement over web search results. (Completed in [4_web_search_refinement.ipynb](4_web_search_refinement.ipynb))
+4. **Web Search Integration & Refinement (CRAG)**: Integrate live Tavily Web Search as a fallback when local database retrieval is `INCORRECT`, running sentence-level context refinement over web search results. (Completed in [4_web_search_refinement.ipynb](4_web_search_refinement.ipynb))
+5. **[Current] Query Rewriting**: Introduce a query rewriter node before executing web search when the evaluation verdict is `INCORRECT`. The LLM rewrites raw user questions into optimized web search queries (keywords, time constraints, etc.) for improved web document retrieval. (Completed in [5_query_rewrite.ipynb](5_query_rewrite.ipynb))
 
 ---
 
@@ -20,6 +21,7 @@ Our implementation progresses from a simple baseline to a fully corrective graph
 - [2_retrieval_refinement.ipynb](2_retrieval_refinement.ipynb): Jupyter Notebook containing the second phase—Retrieval Refinement with sentence-level relevance grading.
 - [3_retrieval_evaluator.ipynb](3_retrieval_evaluator.ipynb): Jupyter Notebook containing the third phase—Retrieval Evaluation & Routing logic of Corrective RAG.
 - [4_web_search_refinement.ipynb](4_web_search_refinement.ipynb): Jupyter Notebook containing the fourth phase—Web Search Integration using Tavily Search with sentence-level context refinement.
+- [5_query_rewrite.ipynb](5_query_rewrite.ipynb): Jupyter Notebook containing the fifth phase—Query Rewriting before web search integration.
 - `.gitignore`: Configured to ignore virtual environments, cache files, environment variables, and local Jupyter checkpoints.
 
 ---
@@ -201,6 +203,62 @@ graph TD
 
 ---
 
+## Phase 5: Query Rewriting Architecture
+
+The implementation in [5_query_rewrite.ipynb](5_query_rewrite.ipynb) introduces a query rewriting step before performing web search. When the retrieval verdict is `INCORRECT`, raw user questions are transformed by an LLM into concise, search-optimized keyword queries (including recency constraints if applicable) to improve web retrieval quality.
+
+### 1. Key Highlights & Updates
+- **Structured Query Generation**: Uses `WebQuery` Pydantic model with structured output (`rewrite_chain`) to formulate web queries.
+- **Rewriting Rules**:
+  - Converts questions to short keyword queries (6–14 words).
+  - Automatically appends recency constraints (e.g., `last 30 days`) if recency is implied in the user prompt.
+- **State & Fallback**:
+  - Adds `web_query: str` to `State`.
+  - `web_search_node` checks `state.get("web_query")` and falls back to `state["question"]` if unavailable.
+
+### 2. LangGraph Execution Workflow
+
+```mermaid
+graph TD
+    START((START)) --> Retrieve[retrieve]
+    Retrieve --> Eval[eval_each_doc]
+    Eval -->|Verdict CORRECT| Refine[refine]
+    Eval -->|Verdict INCORRECT| Rewrite[rewrite_query]
+    Eval -->|Verdict AMBIGUOUS| Ambiguous[ambiguous]
+    Rewrite --> WebSearch[web_search]
+    WebSearch --> Refine
+    Refine --> Generate[generate]
+    Generate --> END((END))
+    Ambiguous --> END((END))
+```
+
+- **Extended State Representation**:
+  ```python
+  class State(TypedDict):
+      question: str
+      docs: List[Document]
+      good_docs: List[Document]
+      verdict: str
+      reason: str
+      strips: List[str]
+      kept_strips: List[str]
+      refined_context: str
+      web_docs: List[Document]
+      web_query: str               # Optimized web search query string
+      answer: str
+  ```
+
+- **Nodes**:
+  - `retrieve`: Retrieves top `k=4` documents from FAISS index.
+  - `eval_each_doc`: Grades retrieved documents and sets `verdict`.
+  - `rewrite_query`: Invokes `rewrite_chain` to produce an optimized web search query stored in `web_query`.
+  - `web_search`: Uses Tavily Search with `web_query` (or fallback to `question`) to populate `web_docs`.
+  - `refine`: Decomposes and filters context from either `good_docs` or `web_docs` into `refined_context`.
+  - `generate`: Synthesizes final response strictly from `refined_context`.
+  - `ambiguous`: Handles `AMBIGUOUS` verdict cases.
+
+---
+
 ## Getting Started
 
 ### Prerequisites
@@ -238,6 +296,8 @@ Make sure you have Python (version 3.9+) installed, along with Jupyter Notebook 
    - Run [2_retrieval_refinement.ipynb](2_retrieval_refinement.ipynb) to test retrieval refinement with relevance filtering.
    - Run [3_retrieval_evaluator.ipynb](3_retrieval_evaluator.ipynb) to test retrieval evaluation and routing.
    - Run [4_web_search_refinement.ipynb](4_web_search_refinement.ipynb) to test web search fallback integration and sentence refinement over web documents.
+   - Run [5_query_rewrite.ipynb](5_query_rewrite.ipynb) to test query rewriting prior to web search.
 
 ---
+
 
